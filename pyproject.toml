@@ -15,3 +15,28 @@ dev = [
     "mypy>=2.4.1",
     "ruff>=0.17.4",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "RET",      # return
+    "PL",       # pylint
+    "RUF",      # ruff-specific
+    "ANN",      # type annotations
+    "D",        # docstrings
+]
+ignore = ["D203", "D213", "RUF001", "RUF002", "RUF003"]  # RUF00x: ложные срабатывания на кириллицу
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
