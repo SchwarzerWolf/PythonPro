@@ -13,6 +13,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=2.4.1",
+    "rdkit-stubs>=0.8",
     "ruff>=0.17.4",
 ]
 
@@ -40,3 +41,7 @@ ignore = ["D203", "D213", "RUF001", "RUF002", "RUF003"]  # RUF00x: ложные 
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[[tool.mypy.overrides]]
+module = ["faerun", "faerun.*", "tmap", "tmap.*"]
+ignore_missing_imports = true

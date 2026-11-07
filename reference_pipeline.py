@@ -9,8 +9,14 @@ import os
 
 import numpy as np
 from faerun import Faerun
-from rdkit import Chem, DataStructs
-from rdkit.Chem import Descriptors, rdFingerprintGenerator
+from rdkit import Chem
+from rdkit.Chem import (
+    Crippen,
+    Descriptors,
+    rdFingerprintGenerator,
+    rdMolDescriptors,
+)
+from rdkit.DataStructs.cDataStructs import BulkTanimotoSimilarity
 from rdkit.ML.Cluster import Butina
 from tmap import TMAP
 
@@ -45,12 +51,14 @@ REPORT_FIELDS = {
 }
 
 
-def load(input_file_path):
+def load(input_file_path: str) -> list[dict]:
+    """Loads data from csv file."""
     with open(input_file_path, newline="", encoding="utf-8") as input_file:
         return list(csv.DictReader(input_file))
 
 
-def calculate_properties(rows):
+def calculate_properties(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Calculates molecular properties from rows and separates valid and invalid records."""
     generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=4096)
 
     valid_molecules = []
@@ -65,12 +73,12 @@ def calculate_properties(rows):
                 "molecule": molecule,
                 "fingerprint": generator.GetFingerprint(molecule),
                 "MW": Descriptors.MolWt(molecule),
-                "LogP": Descriptors.MolLogP(molecule),
-                "TPSA": Descriptors.TPSA(molecule),
-                "HBD": Descriptors.NumHDonors(molecule),
-                "HBA": Descriptors.NumHAcceptors(molecule),
-                "RotBonds": Descriptors.NumRotatableBonds(molecule),
-                "Rings": Descriptors.RingCount(molecule),
+                "LogP": Crippen.MolLogP(molecule),
+                "TPSA": rdMolDescriptors.CalcTPSA(molecule),
+                "HBD": rdMolDescriptors.CalcNumHBD(molecule),
+                "HBA": rdMolDescriptors.CalcNumHBA(molecule),
+                "RotBonds": rdMolDescriptors.CalcNumRotatableBonds(molecule),
+                "Rings": rdMolDescriptors.CalcNumRings(molecule),
                 "QED": Descriptors.qed(molecule),
             }
             molecular_properties["Ro5_pass"] = (
@@ -84,7 +92,8 @@ def calculate_properties(rows):
     return valid_molecules, invalid_molecules
 
 
-def print_statistics(valid_molecules, invalid_molecules):
+def print_statistics(valid_molecules: list[dict], invalid_molecules: list[dict]) -> None:
+    """Prints some statistical info."""
     total_count = len(valid_molecules) + len(invalid_molecules)
     print(f"Valid molecules: {len(valid_molecules)} / {total_count}")
     print(f"Ro5 pass: {sum(row['Ro5_pass'] for row in valid_molecules)} / {total_count}")
@@ -94,21 +103,17 @@ def print_statistics(valid_molecules, invalid_molecules):
         print(row["mol_id"], row["MW"], row["LogP"], row["TPSA"], row["QED"], row["Ro5_pass"])
 
 
-def clusterize(valid_molecules):
+def clusterize(valid_molecules: list[dict]) -> None:
+    """Performs Butina clustering algorithm on molecules."""
     fingerprints = [molecule["fingerprint"] for molecule in valid_molecules]
     distances = []
     for i in range(1, len(fingerprints)):
-        similarity_scores = DataStructs.BulkTanimotoSimilarity(
+        similarity_scores = BulkTanimotoSimilarity(
             fingerprints[i],
             fingerprints[:i],
         )
         distances.extend([1 - score for score in similarity_scores])
-    clusters = Butina.ClusterData(
-        distances,
-        len(fingerprints),
-        0.7,
-        isDistData=True
-    )
+    clusters = Butina.ClusterData(distances, len(fingerprints), 0.7, isDistData=True)
     for row in valid_molecules:
         row["cluster"] = -1
     for cluster_id, members in enumerate(clusters):
@@ -116,10 +121,13 @@ def clusterize(valid_molecules):
             valid_molecules[idx]["cluster"] = cluster_id
 
 
-def plot_graph(valid_molecules):
-    fingerprints = [molecule["fingerprint"] for molecule in valid_molecules]
-    X = np.array([list(fingerprint) for fingerprint in fingerprints], dtype=np.uint8)
-    x, y, s, t = TMAP(metric="jaccard", n_neighbors=10).fit_transform(X)
+def plot_graph(valid_molecules: list[dict]) -> None:
+    """Creates layout and draws a graph using Faerun library."""
+    fingerprints = np.array(
+        [list(molecule["fingerprint"]) for molecule in valid_molecules],
+        dtype=np.uint8,
+    )
+    x, y, s, t = TMAP(metric="jaccard", n_neighbors=10).fit_transform(fingerprints)
     for row, xi, yi in zip(valid_molecules, x, y, strict=True):
         row["x"] = xi
         row["y"] = yi
@@ -154,23 +162,24 @@ def plot_graph(valid_molecules):
     f.plot("molecules", path=OUTPUT_FILE_FOLDER, template="smiles")
 
 
-def filter_output(molecules):
+def filter_output(molecules: list[dict]) -> list[dict]:
+    """Filters record info only to required fields."""
     return [
-        {
-            key: value for key, value in molecule.items()
-            if key in REPORT_FIELDS
-        } for molecule in molecules
+        {key: value for key, value in molecule.items() if key in REPORT_FIELDS}
+        for molecule in molecules
     ]
 
 
-def save(file_path, values):
+def save(file_path: str, values: list[dict]) -> None:
+    """Saves data to a specified file."""
     with open(file_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(values[0]))
         writer.writeheader()
         writer.writerows(values)
 
 
-def run():
+def run() -> None:
+    """Orchestrates the pipeline."""
     os.makedirs(OUTPUT_FILE_FOLDER, exist_ok=True)
     molecules = load(INPUT_FILE_PATH)
     valid_molecules, invalid_molecules = calculate_properties(molecules)
@@ -184,6 +193,7 @@ def run():
 
     filtered_values = filter_output(valid_molecules)
     save(OUTPUT_FILE_PATH, filtered_values)
+
 
 if __name__ == "__main__":
     run()
