@@ -1,0 +1,17 @@
+[project]
+name = "pythonproclasses"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "faerun>=0.4.7",
+    "matplotlib<3.9",
+    "numpy>=2.5.4",
+    "rdkit>=2026.9.1",
+    "tmap2>=0.3.1",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "ruff>=0.17.4",
+]
