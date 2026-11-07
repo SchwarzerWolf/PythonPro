@@ -17,8 +17,8 @@ rotbonds_list = []
 rings_list = []
 qed_list = []
 valid_list = []
-# os.makedirs("output")
-with open("molecules.csv", newline="", encoding="utf-8") as fh:
+os.makedirs("output", exist_ok=True)
+with open("data/molecules.csv", newline="", encoding="utf-8") as fh:
     rows = list(csv.DictReader(fh))
 # process all molecules fast, don't touch
 mols = [Chem.MolFromSmiles(r["smiles"]) for r in rows]
