@@ -1,0 +1,47 @@
+[project]
+name = "pythonproclasses"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "faerun>=0.4.7",
+    "matplotlib<3.9",
+    "numpy>=2.5.4",
+    "rdkit>=2026.9.1",
+    "tmap2>=0.3.1",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "rdkit-stubs>=0.8",
+    "ruff>=0.17.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "RET",      # return
+    "PL",       # pylint
+    "RUF",      # ruff-specific
+    "ANN",      # type annotations
+    "D",        # docstrings
+]
+ignore = ["D203", "D213", "RUF001", "RUF002", "RUF003"]  # RUF00x: ложные срабатывания на кириллицу
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[[tool.mypy.overrides]]
+module = ["faerun", "faerun.*", "tmap", "tmap.*"]
+ignore_missing_imports = true
