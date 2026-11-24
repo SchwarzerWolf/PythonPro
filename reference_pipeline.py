@@ -20,180 +20,222 @@ from rdkit.DataStructs.cDataStructs import BulkTanimotoSimilarity
 from rdkit.ML.Cluster import Butina
 from tmap import TMAP
 
-MAX_MOLECULAR_WEIGHT = 500
-MAX_LOG_P = 5
-MAX_HDB = 5
-MAX_HBA = 10
 
-INPUT_FILE_PATH = os.path.join("data", "molecules.csv")
-OUTPUT_FILE_FOLDER = os.path.join("output")
-OUTPUT_FILE_PATH = os.path.join(
-    OUTPUT_FILE_FOLDER,
-    "molecules_processed.csv",
-)
-INVALID_OUTPUT_FILE_PATH = os.path.join(
-    OUTPUT_FILE_FOLDER,
-    "molecules_invalid.csv",
-)
+class Molecule:
+    """Valid molecule with its calculated descriptors and fingerprint."""
 
-REPORT_FIELDS = {
-    "mol_id",
-    "smiles",
-    "MW",
-    "LogP",
-    "TPSA",
-    "HBD",
-    "HBA",
-    "RotBonds",
-    "Rings",
-    "QED",
-    "Ro5_pass",
-}
+    MAX_MOLECULAR_WEIGHT = 500
+    MAX_LOG_P = 5
+    MAX_HBD = 5
+    MAX_HBA = 10
 
+    FINGERPRINT_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=4096)
 
-def load(input_file_path: str) -> list[dict]:
-    """Loads data from csv file."""
-    with open(input_file_path, newline="", encoding="utf-8") as input_file:
-        return list(csv.DictReader(input_file))
+    def __init__(self, mol_id: str, smiles: str, molecule: Chem.Mol) -> None:
+        self.mol_id = mol_id
+        self.smiles = smiles
 
+        self.fingerprint = self.FINGERPRINT_GENERATOR.GetFingerprint(molecule)
+        self.molecular_weight: float = Descriptors.MolWt(molecule)
+        self.log_p: float = Crippen.MolLogP(molecule)
+        self.tpsa: float = rdMolDescriptors.CalcTPSA(molecule)
+        self.hbd: int = rdMolDescriptors.CalcNumHBD(molecule)
+        self.hba: int = rdMolDescriptors.CalcNumHBA(molecule)
+        self.rotatable_bonds: int = rdMolDescriptors.CalcNumRotatableBonds(molecule)
+        self.rings: int = rdMolDescriptors.CalcNumRings(molecule)
+        self.qed: float = Descriptors.qed(molecule)
 
-def calculate_properties(rows: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Calculates molecular properties from rows and separates valid and invalid records."""
-    generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=4096)
+    @classmethod
+    def from_row(cls, row: dict) -> "Molecule | None":
+        """Creates a molecule from a csv row, returns None if SMILES is invalid.
 
-    valid_molecules = []
-    invalid_molecules = []
-    for row in rows:
+        SMILES is parsed only once here and the parsed object is passed to __init__.
+        """
         molecule = Chem.MolFromSmiles(row["smiles"])
         if molecule is None:
-            invalid_molecules.append(row)
-        else:
-            molecular_properties = {
-                **row,
-                "molecule": molecule,
-                "fingerprint": generator.GetFingerprint(molecule),
-                "MW": Descriptors.MolWt(molecule),
-                "LogP": Crippen.MolLogP(molecule),
-                "TPSA": rdMolDescriptors.CalcTPSA(molecule),
-                "HBD": rdMolDescriptors.CalcNumHBD(molecule),
-                "HBA": rdMolDescriptors.CalcNumHBA(molecule),
-                "RotBonds": rdMolDescriptors.CalcNumRotatableBonds(molecule),
-                "Rings": rdMolDescriptors.CalcNumRings(molecule),
-                "QED": Descriptors.qed(molecule),
-            }
-            molecular_properties["Ro5_pass"] = (
-                (molecular_properties["MW"] <= MAX_MOLECULAR_WEIGHT)
-                and (molecular_properties["LogP"] <= MAX_LOG_P)
-                and (molecular_properties["HBD"] <= MAX_HDB)
-                and (molecular_properties["HBA"] <= MAX_HBA)
-            )
-            valid_molecules.append(molecular_properties)
+            return None
+        return cls(row["mol_id"], row["smiles"], molecule)
 
-    return valid_molecules, invalid_molecules
-
-
-def print_statistics(valid_molecules: list[dict], invalid_molecules: list[dict]) -> None:
-    """Prints some statistical info."""
-    total_count = len(valid_molecules) + len(invalid_molecules)
-    print(f"Valid molecules: {len(valid_molecules)} / {total_count}")
-    print(f"Ro5 pass: {sum(row['Ro5_pass'] for row in valid_molecules)} / {total_count}")
-    molecular_weights = [row["MW"] for row in valid_molecules]
-    print(f"MW range: {min(molecular_weights):.1f} — {max(molecular_weights):.1f}")
-    for row in valid_molecules[:10]:
-        print(row["mol_id"], row["MW"], row["LogP"], row["TPSA"], row["QED"], row["Ro5_pass"])
-
-
-def clusterize(valid_molecules: list[dict]) -> None:
-    """Performs Butina clustering algorithm on molecules."""
-    fingerprints = [molecule["fingerprint"] for molecule in valid_molecules]
-    distances = []
-    for i in range(1, len(fingerprints)):
-        similarity_scores = BulkTanimotoSimilarity(
-            fingerprints[i],
-            fingerprints[:i],
+    @property
+    def ro5_pass(self) -> bool:
+        """Checks Lipinski's rule of five."""
+        return (
+            self.molecular_weight <= self.MAX_MOLECULAR_WEIGHT
+            and self.log_p <= self.MAX_LOG_P
+            and self.hbd <= self.MAX_HBD
+            and self.hba <= self.MAX_HBA
         )
-        distances.extend([1 - score for score in similarity_scores])
-    clusters = Butina.ClusterData(distances, len(fingerprints), 0.7, isDistData=True)
-    for row in valid_molecules:
-        row["cluster"] = -1
-    for cluster_id, members in enumerate(clusters):
-        for idx in members:
-            valid_molecules[idx]["cluster"] = cluster_id
+
+    def to_report(self) -> dict:
+        """Returns fields that are saved to the output csv file."""
+        return {
+            "mol_id": self.mol_id,
+            "smiles": self.smiles,
+            "MW": self.molecular_weight,
+            "LogP": self.log_p,
+            "TPSA": self.tpsa,
+            "HBD": self.hbd,
+            "HBA": self.hba,
+            "RotBonds": self.rotatable_bonds,
+            "Rings": self.rings,
+            "QED": self.qed,
+            "Ro5_pass": self.ro5_pass,
+        }
 
 
-def plot_graph(valid_molecules: list[dict]) -> None:
-    """Creates layout and draws a graph using Faerun library."""
-    fingerprints = np.array(
-        [list(molecule["fingerprint"]) for molecule in valid_molecules],
-        dtype=np.uint8,
-    )
-    x, y, s, t = TMAP(metric="jaccard", n_neighbors=10).fit_transform(fingerprints)
-    for row, xi, yi in zip(valid_molecules, x, y, strict=True):
-        row["x"] = xi
-        row["y"] = yi
+class GraphGenerator:
+    VALID_FILE_OUTPUT_NAME = "molecules_processed.csv"
+    INVALID_FILE_OUTPUT_NAME = "molecules_invalid.csv"
 
-    f = Faerun(view="front", coords=False, clear_color="#FFFFFF")
-    f.add_scatter(
-        name="molecules",
-        data={
-            "x": x,
-            "y": y,
-            "c": [
-                [row["cluster"] for row in valid_molecules],
-                [row["LogP"] for row in valid_molecules],
-                [row["MW"] for row in valid_molecules],
-            ],
-            "labels": [f"{row['smiles']}__{row['mol_id']}" for row in valid_molecules],
-        },
-        shader="smoothCircle",
-        point_scale=10,
-        colormap=["tab20", "viridis", "plasma"],
-        categorical=[True, False, False],
-        series_title=["Cluster", "LogP", "MolWt"],
-        has_legend=True,
-        legend_title=["Cluster", "LogP", "MolWt"],
-    )
-    f.add_tree(
-        name="molecules_tree",
-        data={"from": s, "to": t},
-        point_helper="molecules",
-        color="#222222",
-    )
-    f.plot("molecules", path=OUTPUT_FILE_FOLDER, template="smiles")
+    def __init__(self, input_file_path: str, output_folder: str) -> None:
+        self.input_file_path: str = input_file_path
+        self.output_folder: str = output_folder
 
+        self.output_file_path = os.path.join(
+            output_folder,
+            self.VALID_FILE_OUTPUT_NAME,
+        )
+        self.invalid_output_file_path = os.path.join(
+            output_folder,
+            self.INVALID_FILE_OUTPUT_NAME,
+        )
+        os.makedirs(self.output_folder, exist_ok=True)
 
-def filter_output(molecules: list[dict]) -> list[dict]:
-    """Filters record info only to required fields."""
-    return [
-        {key: value for key, value in molecule.items() if key in REPORT_FIELDS}
-        for molecule in molecules
-    ]
+        self._rows: list[dict] = []
+        self._valid_molecules: list[Molecule] = []
+        self._invalid_molecules: list[dict] = []
+        self._cluster_labels: list[int] = []
 
+    def _load(self) -> None:
+        """Loads data from csv file."""
+        with open(self.input_file_path, newline="", encoding="utf-8") as input_file:
+            self._rows = list(csv.DictReader(input_file))
 
-def save(file_path: str, values: list[dict]) -> None:
-    """Saves data to a specified file."""
-    with open(file_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(values[0]))
-        writer.writeheader()
-        writer.writerows(values)
+    def _calculate_properties(self) -> None:
+        """Calculates molecular properties from rows and separates valid and invalid records."""
+        valid_molecules = []
+        invalid_molecules = []
+        for row in self._rows:
+            molecule = Molecule.from_row(row)
+            if molecule is None:
+                invalid_molecules.append(row)
+            else:
+                valid_molecules.append(molecule)
 
+        self._valid_molecules = valid_molecules
+        self._invalid_molecules = invalid_molecules
 
-def run() -> None:
-    """Orchestrates the pipeline."""
-    os.makedirs(OUTPUT_FILE_FOLDER, exist_ok=True)
-    molecules = load(INPUT_FILE_PATH)
-    valid_molecules, invalid_molecules = calculate_properties(molecules)
+    def _print_statistics(self) -> None:
+        """Prints some statistical info."""
+        total_count = len(self._valid_molecules) + len(self._invalid_molecules)
+        print(f"Valid molecules: {len(self._valid_molecules)} / {total_count}")
+        ro5_pass_count = sum(molecule.ro5_pass for molecule in self._valid_molecules)
+        print(f"Ro5 pass: {ro5_pass_count} / {total_count}")
+        molecular_weights = [molecule.molecular_weight for molecule in self._valid_molecules]
+        print(f"MW range: {min(molecular_weights):.1f} — {max(molecular_weights):.1f}")
+        for molecule in self._valid_molecules[:10]:
+            print(
+                molecule.mol_id,
+                molecule.molecular_weight,
+                molecule.log_p,
+                molecule.tpsa,
+                molecule.qed,
+                molecule.ro5_pass,
+            )
 
-    if invalid_molecules:
-        save(INVALID_OUTPUT_FILE_PATH, invalid_molecules)
-    print_statistics(valid_molecules, invalid_molecules)
+    def _clusterize(self) -> None:
+        """Performs Butina clustering algorithm on molecules."""
+        fingerprints = [molecule.fingerprint for molecule in self._valid_molecules]
+        distances = []
+        for i in range(1, len(fingerprints)):
+            similarity_scores = BulkTanimotoSimilarity(
+                fingerprints[i],
+                fingerprints[:i],
+            )
+            distances.extend([1 - score for score in similarity_scores])
+        clusters = Butina.ClusterData(distances, len(fingerprints), 0.7, isDistData=True)
+        cluster_labels = [-1] * len(fingerprints)
+        for cluster_id, members in enumerate(clusters):
+            for idx in members:
+                cluster_labels[idx] = cluster_id
+        self._cluster_labels = cluster_labels
 
-    clusterize(valid_molecules)
-    plot_graph(valid_molecules)
+    def _plot_graph(self) -> None:
+        """Creates layout and draws a graph using Faerun library."""
+        fingerprints = np.array(
+            [list(molecule.fingerprint) for molecule in self._valid_molecules],
+            dtype=np.uint8,
+        )
+        x, y, edges_from, edges_to = TMAP(metric="jaccard", n_neighbors=10).fit_transform(
+            fingerprints
+        )
 
-    filtered_values = filter_output(valid_molecules)
-    save(OUTPUT_FILE_PATH, filtered_values)
+        faerun_plot = Faerun(view="front", coords=False, clear_color="#FFFFFF")
+        faerun_plot.add_scatter(
+            name="molecules",
+            data={
+                "x": x,
+                "y": y,
+                "c": [
+                    self._cluster_labels,
+                    [molecule.log_p for molecule in self._valid_molecules],
+                    [molecule.molecular_weight for molecule in self._valid_molecules],
+                ],
+                "labels": [
+                    f"{molecule.smiles}__{molecule.mol_id}" for molecule in self._valid_molecules
+                ],
+            },
+            shader="smoothCircle",
+            point_scale=10,
+            colormap=["tab20", "viridis", "plasma"],
+            categorical=[True, False, False],
+            series_title=["Cluster", "LogP", "MolWt"],
+            has_legend=True,
+            legend_title=["Cluster", "LogP", "MolWt"],
+        )
+        faerun_plot.add_tree(
+            name="molecules_tree",
+            data={"from": edges_from, "to": edges_to},
+            point_helper="molecules",
+            color="#222222",
+        )
+        faerun_plot.plot("molecules", path=self.output_folder, template="smiles")
+
+    @staticmethod
+    def _write_csv(file_path: str, values: list[dict]) -> None:
+        """Saves data to a specified file."""
+        with open(file_path, "w", newline="", encoding="utf-8") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=list(values[0]))
+            writer.writeheader()
+            writer.writerows(values)
+
+    def _save(self) -> None:
+        """Saves valid and invalid molecules to csv files."""
+        if self._invalid_molecules:
+            self._write_csv(self.invalid_output_file_path, self._invalid_molecules)
+        if self._valid_molecules:
+            report = [molecule.to_report() for molecule in self._valid_molecules]
+            self._write_csv(self.output_file_path, report)
+
+    def run(self) -> None:
+        """Orchestrates the pipeline."""
+        self._load()
+        self._calculate_properties()
+        if not self._valid_molecules:
+            print("No valid molecules found, nothing to process.")
+            self._save()
+            return
+        self._print_statistics()
+        self._clusterize()
+        self._plot_graph()
+        self._save()
 
 
 if __name__ == "__main__":
-    run()
+    input_file_path = os.path.join("data", "molecules.csv")
+    output_file_folder = os.path.join("output")
+    graph_generator = GraphGenerator(
+        input_file_path,
+        output_file_folder,
+    )
+    graph_generator.run()
