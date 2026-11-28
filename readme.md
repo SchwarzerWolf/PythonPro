@@ -45,7 +45,7 @@ pyproject.toml, uv.lock  # зависимости
 3. Запустите пайплайн:
 
    ```bash
-   uv run python reference_pipeline.py
+   uv run python main.py
    ```
 
 4. Результаты появятся в папке `output/`: таблица `molecules_new.csv` и HTML-файл визуализации `molecules.html`, который нужно открыть в браузере.
