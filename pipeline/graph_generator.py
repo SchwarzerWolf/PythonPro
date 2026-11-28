@@ -1,9 +1,10 @@
+"""Pipeline that processes molecules, clusters them and draws a graph."""
+
 import csv
 import os
 
 import numpy as np
 from faerun import Faerun
-
 from rdkit.DataStructs.cDataStructs import BulkTanimotoSimilarity
 from rdkit.ML.Cluster import Butina
 from tmap import TMAP
@@ -13,23 +14,26 @@ from pipeline.sources import Source
 
 
 class GraphGenerator:
+    """Processes molecules from a source: descriptors, clustering, graph and csv reports."""
+
     VALID_FILE_OUTPUT_NAME = "molecules_processed.csv"
     INVALID_FILE_OUTPUT_NAME = "molecules_invalid.csv"
+    CLUSTER_DISTANCE_THRESHOLD = 0.7  # Butina: молекулы ближе этого расстояния – в одном кластере
+    N_NEIGHBORS = 10  # TMAP: сколько соседей учитывать для каждой молекулы
 
-    def __init__(self, output_folder: str, source: Source) -> None:
-        self.output_folder: str = output_folder
+    def __init__(self, source: Source, output_folder: str) -> None:
+        """Creates the pipeline.
 
-        self.output_file_path = os.path.join(
-            output_folder,
-            self.VALID_FILE_OUTPUT_NAME,
-        )
-        self.invalid_output_file_path = os.path.join(
-            output_folder,
-            self.INVALID_FILE_OUTPUT_NAME,
-        )
-        os.makedirs(self.output_folder, exist_ok=True)
-
+        Args:
+            source: where to get molecules from.
+            output_folder: folder for csv reports and the html graph.
+        """
         self.source = source
+        self.output_folder = output_folder
+
+        self.output_file_path = os.path.join(output_folder, self.VALID_FILE_OUTPUT_NAME)
+        self.invalid_output_file_path = os.path.join(output_folder, self.INVALID_FILE_OUTPUT_NAME)
+        os.makedirs(self.output_folder, exist_ok=True)
 
         self._rows: list[dict] = []
         self._valid_molecules: list[Molecule] = []
@@ -78,7 +82,12 @@ class GraphGenerator:
                 fingerprints[:i],
             )
             distances.extend([1 - score for score in similarity_scores])
-        clusters = Butina.ClusterData(distances, len(fingerprints), 0.7, isDistData=True)
+        clusters = Butina.ClusterData(
+            distances,
+            len(fingerprints),
+            self.CLUSTER_DISTANCE_THRESHOLD,
+            isDistData=True,
+        )
         cluster_labels = [-1] * len(fingerprints)
         for cluster_id, members in enumerate(clusters):
             for idx in members:
@@ -91,9 +100,12 @@ class GraphGenerator:
             [list(molecule.fingerprint) for molecule in self._valid_molecules],
             dtype=np.uint8,
         )
-        x, y, edges_from, edges_to = TMAP(metric="jaccard", n_neighbors=10).fit_transform(
-            fingerprints
-        )
+        # соседей не может быть больше, чем остальных молекул
+        n_neighbors = min(self.N_NEIGHBORS, len(fingerprints) - 1)
+        x, y, edges_from, edges_to = TMAP(
+            metric="jaccard",
+            n_neighbors=n_neighbors,
+        ).fit_transform(fingerprints)
 
         faerun_plot = Faerun(view="front", coords=False, clear_color="#FFFFFF")
         faerun_plot.add_scatter(

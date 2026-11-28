@@ -1,3 +1,5 @@
+"""Molecule with calculated descriptors and fingerprint."""
+
 from rdkit import Chem
 from rdkit.Chem import (
     Crippen,
@@ -18,6 +20,13 @@ class Molecule:
     FINGERPRINT_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=4096)
 
     def __init__(self, mol_id: str, smiles: str, molecule: Chem.Mol) -> None:
+        """Calculates descriptors and fingerprint of an already parsed molecule.
+
+        Args:
+            mol_id: molecule identifier.
+            smiles: molecule SMILES.
+            molecule: RDKit molecule parsed from the SMILES.
+        """
         self.mol_id = mol_id
         self.smiles = smiles
 
@@ -67,6 +76,3 @@ class Molecule:
             "QED": self.qed,
             "Ro5_pass": self.ro5_pass,
         }
-
-
-
