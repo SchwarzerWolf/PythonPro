@@ -1,115 +1,44 @@
-"""Пайплайн для процессинга молекул.
-
-Читает молекулы из файла, считает дескрипторы и фингерпринты,
-делает кластеризацию и визуализирует результаты.
-"""
+"""Pipeline that processes molecules, clusters them and draws a graph."""
 
 import csv
 import os
 
 import numpy as np
 from faerun import Faerun
-from rdkit import Chem
-from rdkit.Chem import (
-    Crippen,
-    Descriptors,
-    rdFingerprintGenerator,
-    rdMolDescriptors,
-)
 from rdkit.DataStructs.cDataStructs import BulkTanimotoSimilarity
 from rdkit.ML.Cluster import Butina
 from tmap import TMAP
 
-
-class Molecule:
-    """Valid molecule with its calculated descriptors and fingerprint."""
-
-    MAX_MOLECULAR_WEIGHT = 500
-    MAX_LOG_P = 5
-    MAX_HBD = 5
-    MAX_HBA = 10
-
-    FINGERPRINT_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=4096)
-
-    def __init__(self, mol_id: str, smiles: str, molecule: Chem.Mol) -> None:
-        self.mol_id = mol_id
-        self.smiles = smiles
-
-        self.fingerprint = self.FINGERPRINT_GENERATOR.GetFingerprint(molecule)
-        self.molecular_weight: float = Descriptors.MolWt(molecule)
-        self.log_p: float = Crippen.MolLogP(molecule)
-        self.tpsa: float = rdMolDescriptors.CalcTPSA(molecule)
-        self.hbd: int = rdMolDescriptors.CalcNumHBD(molecule)
-        self.hba: int = rdMolDescriptors.CalcNumHBA(molecule)
-        self.rotatable_bonds: int = rdMolDescriptors.CalcNumRotatableBonds(molecule)
-        self.rings: int = rdMolDescriptors.CalcNumRings(molecule)
-        self.qed: float = Descriptors.qed(molecule)
-
-    @classmethod
-    def from_row(cls, row: dict) -> "Molecule | None":
-        """Creates a molecule from a csv row, returns None if SMILES is invalid.
-
-        SMILES is parsed only once here and the parsed object is passed to __init__.
-        """
-        molecule = Chem.MolFromSmiles(row["smiles"])
-        if molecule is None:
-            return None
-        return cls(row["mol_id"], row["smiles"], molecule)
-
-    @property
-    def ro5_pass(self) -> bool:
-        """Checks Lipinski's rule of five."""
-        return (
-            self.molecular_weight <= self.MAX_MOLECULAR_WEIGHT
-            and self.log_p <= self.MAX_LOG_P
-            and self.hbd <= self.MAX_HBD
-            and self.hba <= self.MAX_HBA
-        )
-
-    def to_report(self) -> dict:
-        """Returns fields that are saved to the output csv file."""
-        return {
-            "mol_id": self.mol_id,
-            "smiles": self.smiles,
-            "MW": self.molecular_weight,
-            "LogP": self.log_p,
-            "TPSA": self.tpsa,
-            "HBD": self.hbd,
-            "HBA": self.hba,
-            "RotBonds": self.rotatable_bonds,
-            "Rings": self.rings,
-            "QED": self.qed,
-            "Ro5_pass": self.ro5_pass,
-        }
+from pipeline.molecule import Molecule
+from pipeline.sources import Source
 
 
 class GraphGenerator:
+    """Processes molecules from a source: descriptors, clustering, graph and csv reports."""
+
     VALID_FILE_OUTPUT_NAME = "molecules_processed.csv"
     INVALID_FILE_OUTPUT_NAME = "molecules_invalid.csv"
+    CLUSTER_DISTANCE_THRESHOLD = 0.7  # Butina: молекулы ближе этого расстояния – в одном кластере
+    N_NEIGHBORS = 10  # TMAP: сколько соседей учитывать для каждой молекулы
 
-    def __init__(self, input_file_path: str, output_folder: str) -> None:
-        self.input_file_path: str = input_file_path
-        self.output_folder: str = output_folder
+    def __init__(self, source: Source, output_folder: str) -> None:
+        """Creates the pipeline.
 
-        self.output_file_path = os.path.join(
-            output_folder,
-            self.VALID_FILE_OUTPUT_NAME,
-        )
-        self.invalid_output_file_path = os.path.join(
-            output_folder,
-            self.INVALID_FILE_OUTPUT_NAME,
-        )
+        Args:
+            source: where to get molecules from.
+            output_folder: folder for csv reports and the html graph.
+        """
+        self.source = source
+        self.output_folder = output_folder
+
+        self.output_file_path = os.path.join(output_folder, self.VALID_FILE_OUTPUT_NAME)
+        self.invalid_output_file_path = os.path.join(output_folder, self.INVALID_FILE_OUTPUT_NAME)
         os.makedirs(self.output_folder, exist_ok=True)
 
         self._rows: list[dict] = []
         self._valid_molecules: list[Molecule] = []
         self._invalid_molecules: list[dict] = []
         self._cluster_labels: list[int] = []
-
-    def _load(self) -> None:
-        """Loads data from csv file."""
-        with open(self.input_file_path, newline="", encoding="utf-8") as input_file:
-            self._rows = list(csv.DictReader(input_file))
 
     def _calculate_properties(self) -> None:
         """Calculates molecular properties from rows and separates valid and invalid records."""
@@ -153,7 +82,12 @@ class GraphGenerator:
                 fingerprints[:i],
             )
             distances.extend([1 - score for score in similarity_scores])
-        clusters = Butina.ClusterData(distances, len(fingerprints), 0.7, isDistData=True)
+        clusters = Butina.ClusterData(
+            distances,
+            len(fingerprints),
+            self.CLUSTER_DISTANCE_THRESHOLD,
+            isDistData=True,
+        )
         cluster_labels = [-1] * len(fingerprints)
         for cluster_id, members in enumerate(clusters):
             for idx in members:
@@ -166,9 +100,12 @@ class GraphGenerator:
             [list(molecule.fingerprint) for molecule in self._valid_molecules],
             dtype=np.uint8,
         )
-        x, y, edges_from, edges_to = TMAP(metric="jaccard", n_neighbors=10).fit_transform(
-            fingerprints
-        )
+        # соседей не может быть больше, чем остальных молекул
+        n_neighbors = min(self.N_NEIGHBORS, len(fingerprints) - 1)
+        x, y, edges_from, edges_to = TMAP(
+            metric="jaccard",
+            n_neighbors=n_neighbors,
+        ).fit_transform(fingerprints)
 
         faerun_plot = Faerun(view="front", coords=False, clear_color="#FFFFFF")
         faerun_plot.add_scatter(
@@ -219,7 +156,7 @@ class GraphGenerator:
 
     def run(self) -> None:
         """Orchestrates the pipeline."""
-        self._load()
+        self._rows = self.source.get_rows()
         self._calculate_properties()
         if not self._valid_molecules:
             print("No valid molecules found, nothing to process.")
@@ -229,13 +166,3 @@ class GraphGenerator:
         self._clusterize()
         self._plot_graph()
         self._save()
-
-
-if __name__ == "__main__":
-    input_file_path = os.path.join("data", "molecules.csv")
-    output_file_folder = os.path.join("output")
-    graph_generator = GraphGenerator(
-        input_file_path,
-        output_file_folder,
-    )
-    graph_generator.run()
