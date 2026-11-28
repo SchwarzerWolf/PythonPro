@@ -5,7 +5,11 @@
 """
 
 import csv
+import json
 import os
+import subprocess
+import tempfile
+from abc import ABC, abstractmethod
 
 import numpy as np
 from faerun import Faerun
@@ -83,12 +87,60 @@ class Molecule:
         }
 
 
+class Source(ABC):
+    @abstractmethod
+    def get_rows(self) -> list[dict]:
+        pass
+
+
+class CsvSource(Source):
+    def __init__(self, input_file_path: str):
+        self.input_file_path = input_file_path
+
+    def get_rows(self) -> list[dict]:
+        with open(self.input_file_path, newline="", encoding="utf-8") as input_file:
+            return list(csv.DictReader(input_file))
+
+
+class ReinventSource(Source):
+    def get_rows(self) -> list[dict]:
+        executable = os.environ["REINVENT_EXECUTABLE"]
+        model_file = os.environ["REINVENT_MODEL_FILE"]
+
+        work_folder = tempfile.mkdtemp()
+        config_path = os.path.join(work_folder, "sampling.json")
+        output_path = os.path.join(work_folder, "sampling.csv")
+
+        config = {
+            "run_type": "sampling",
+            "device": "cpu",
+            "parameters": {
+                "model_file": model_file,
+                "num_smiles": 5,
+                "output_file": output_path
+            },
+        }
+        with open(config_path, "w", encoding="utf-8") as config_file:
+            json.dump(config, config_file)
+
+        result = subprocess.run([executable, config_path], capture_output=True, text=True)
+        print("код завершения:", result.returncode)
+
+        with open(output_path, newline="", encoding="utf-8") as output_file:
+            return [
+                {
+                    "mol_id": f"REINV_{index}",
+                    "smiles": row["SMILES"]
+                }
+                for index, row in enumerate(csv.DictReader(output_file))
+            ]
+
+
 class GraphGenerator:
     VALID_FILE_OUTPUT_NAME = "molecules_processed.csv"
     INVALID_FILE_OUTPUT_NAME = "molecules_invalid.csv"
 
-    def __init__(self, input_file_path: str, output_folder: str) -> None:
-        self.input_file_path: str = input_file_path
+    def __init__(self, output_folder: str, source: Source) -> None:
         self.output_folder: str = output_folder
 
         self.output_file_path = os.path.join(
@@ -101,15 +153,12 @@ class GraphGenerator:
         )
         os.makedirs(self.output_folder, exist_ok=True)
 
+        self.source = source
+
         self._rows: list[dict] = []
         self._valid_molecules: list[Molecule] = []
         self._invalid_molecules: list[dict] = []
         self._cluster_labels: list[int] = []
-
-    def _load(self) -> None:
-        """Loads data from csv file."""
-        with open(self.input_file_path, newline="", encoding="utf-8") as input_file:
-            self._rows = list(csv.DictReader(input_file))
 
     def _calculate_properties(self) -> None:
         """Calculates molecular properties from rows and separates valid and invalid records."""
@@ -219,7 +268,7 @@ class GraphGenerator:
 
     def run(self) -> None:
         """Orchestrates the pipeline."""
-        self._load()
+        self._rows = self.source.get_rows()
         self._calculate_properties()
         if not self._valid_molecules:
             print("No valid molecules found, nothing to process.")
@@ -234,8 +283,10 @@ class GraphGenerator:
 if __name__ == "__main__":
     input_file_path = os.path.join("data", "molecules.csv")
     output_file_folder = os.path.join("output")
+    # source = ReinventSource()
+    source = CsvSource(input_file_path)
     graph_generator = GraphGenerator(
-        input_file_path,
         output_file_folder,
+        source=source,
     )
     graph_generator.run()
